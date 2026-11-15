@@ -689,6 +689,179 @@ struct EditorOps
         return Outcome::none;
     }
 
+    const std::string& currentLine() { return line(e.cursorRow); }
+
+    void deleteBackToColumn(int from)
+    {
+        e.buffer.erase({e.cursorRow, static_cast<std::size_t>(from)},
+                       toText(cursor()));
+        e.cursorColumn = from;
+    }
+
+    int skipSpacesBackFrom(int column)
+    {
+        const auto& text = currentLine();
+
+        while (column > 0
+               && classOf(text[static_cast<std::size_t>(column - 1)])
+                      == CharClass::space)
+            --column;
+
+        return column;
+    }
+
+    int skipClassBackFrom(int column, CharClass cls)
+    {
+        const auto& text = currentLine();
+
+        while (column > 0)
+        {
+            auto before = previousChar(text, column);
+
+            if (classOf(text[static_cast<std::size_t>(before)]) != cls)
+                break;
+
+            column = before;
+        }
+
+        return column;
+    }
+
+    // Where C-w deletes back to: past the spaces, then the word before them.
+    int getStartOfWordBehindCursor()
+    {
+        auto from = skipSpacesBackFrom(e.cursorColumn);
+
+        if (from == 0)
+            return from;
+
+        const auto& text = currentLine();
+        auto cls = classOf(text[static_cast<std::size_t>(previousChar(text, from))]);
+        return skipClassBackFrom(from, cls);
+    }
+
+    void deleteWordBehindCursor() { deleteBackToColumn(getStartOfWordBehindCursor()); }
+
+    void deleteToLineStart() { deleteBackToColumn(0); }
+
+    void joinWithPreviousLine()
+    {
+        if (e.cursorRow == 0)
+            return;
+
+        auto previous = e.cursorRow - 1;
+        auto joinColumn = size(line(previous));
+        e.buffer.erase({previous, static_cast<std::size_t>(joinColumn)},
+                       toText(cursor()));
+        e.cursorRow = previous;
+        e.cursorColumn = joinColumn;
+    }
+
+    void deleteCharacterBehindCursor()
+    {
+        if (e.cursorColumn > 0)
+            deleteBackToColumn(previousChar(currentLine(), e.cursorColumn));
+        else
+            joinWithPreviousLine();
+    }
+
+    void deleteCharacterUnderCursor()
+    {
+        const auto& text = currentLine();
+
+        if (e.cursorColumn < size(text))
+        {
+            auto to = nextChar(text, e.cursorColumn);
+            e.buffer.erase(toText(cursor()),
+                           {e.cursorRow, static_cast<std::size_t>(to)});
+        }
+        else if (e.cursorRow + 1 < rowCount())
+        {
+            e.buffer.erase(toText(cursor()), {e.cursorRow + 1, 0});
+        }
+    }
+
+    void leaveInsertMode()
+    {
+        e.currentMode = Mode::normal;
+        e.cursorColumn = previousChar(currentLine(), e.cursorColumn);
+        clampNormal();
+    }
+
+    void insertLineBreak() { insertRaw("\n"); }
+    void insertTab() { insertRaw("    "); }
+    void moveLeftInLine() { e.cursorColumn = previousChar(currentLine(), e.cursorColumn); }
+    void moveRightInLine() { e.cursorColumn = nextChar(currentLine(), e.cursorColumn); }
+    void moveToLineStart() { e.cursorColumn = 0; }
+    void moveToLineEnd() { e.cursorColumn = size(currentLine()); }
+    void moveUpOneRow() { moveVertical(-1); }
+    void moveDownOneRow() { moveVertical(1); }
+
+    struct InsertKey
+    {
+        std::string_view key;
+        void (EditorOps::*run)();
+    };
+
+    // C-w and C-u at the start of a line join it to the one above, like Backspace.
+    bool isDeletingBackInLine(const std::string& key)
+    {
+        return (key == "C-w" || key == "C-u") && e.cursorColumn > 0;
+    }
+
+    void runInsertKey(const std::string& key)
+    {
+        static constexpr InsertKey insertKeys[] = {
+            {"Esc", &EditorOps::leaveInsertMode},
+            {"C-c", &EditorOps::leaveInsertMode},
+            {"Enter", &EditorOps::insertLineBreak},
+            {"Tab", &EditorOps::insertTab},
+            {"Backspace", &EditorOps::deleteCharacterBehindCursor},
+            {"C-h", &EditorOps::deleteCharacterBehindCursor},
+            {"C-w", &EditorOps::deleteCharacterBehindCursor},
+            {"C-u", &EditorOps::deleteCharacterBehindCursor},
+            {"Delete", &EditorOps::deleteCharacterUnderCursor},
+            {"Left", &EditorOps::moveLeftInLine},
+            {"Right", &EditorOps::moveRightInLine},
+            {"Home", &EditorOps::moveToLineStart},
+            {"End", &EditorOps::moveToLineEnd},
+            {"Up", &EditorOps::moveUpOneRow},
+            {"Down", &EditorOps::moveDownOneRow},
+        };
+
+        if (isDeletingBackInLine(key))
+        {
+            if (key == "C-w")
+                deleteWordBehindCursor();
+            else
+                deleteToLineStart();
+
+            return;
+        }
+
+        for (const auto& insertKey: insertKeys)
+        {
+            if (insertKey.key == key)
+            {
+                (this->*insertKey.run)();
+                return;
+            }
+        }
+
+        if (isPrintable(key))
+            insertRaw(key);
+    }
+
+    Outcome feedInsert(const std::string& key)
+    {
+        runInsertKey(key);
+
+        if (key != "Up" && key != "Down")
+            e.desiredColumn = -1;
+
+        return Outcome::none;
+    }
+
     void moveVertical(int delta)
     {
         auto rows = e.visualRows();
@@ -890,7 +1063,6 @@ Outcome Editor::feed(const std::string& key)
 {
     notice.clear();
     auto ops = EditorOps {*this};
-    auto keepDesired = false;
 
     if (key == "C-s")
     {
@@ -912,105 +1084,7 @@ Outcome Editor::feed(const std::string& key)
         return ops.feedCommandLine(key);
 
     if (currentMode == Mode::insert)
-    {
-        const auto& current = buffer.line(cursorRow);
-        auto at =
-            ::text::Position {cursorRow, static_cast<std::size_t>(cursorColumn)};
-
-        if (key == "Esc" || key == "C-c")
-        {
-            currentMode = Mode::normal;
-            cursorColumn = previousChar(current, cursorColumn);
-            ops.clampNormal();
-        }
-        else if (key == "Enter")
-            ops.insertRaw("\n");
-        else if (key == "Tab")
-            ops.insertRaw("    ");
-        else if ((key == "C-w" || key == "C-u") && cursorColumn > 0)
-        {
-            auto from = 0;
-
-            if (key == "C-w")
-            {
-                from = cursorColumn;
-
-                while (from > 0
-                       && classOf(current[static_cast<std::size_t>(from - 1)])
-                              == CharClass::space)
-                    --from;
-
-                if (from > 0)
-                {
-                    auto cls = classOf(current[static_cast<std::size_t>(
-                        previousChar(current, from))]);
-
-                    while (from > 0)
-                    {
-                        auto before = previousChar(current, from);
-
-                        if (classOf(current[static_cast<std::size_t>(before)])
-                            != cls)
-                            break;
-
-                        from = before;
-                    }
-                }
-            }
-
-            buffer.erase({cursorRow, static_cast<std::size_t>(from)}, at);
-            cursorColumn = from;
-        }
-        else if (key == "Backspace" || key == "C-h" || key == "C-w" || key == "C-u")
-        {
-            if (cursorColumn > 0)
-            {
-                auto from = previousChar(current, cursorColumn);
-                buffer.erase({cursorRow, static_cast<std::size_t>(from)}, at);
-                cursorColumn = from;
-            }
-            else if (cursorRow > 0)
-            {
-                auto previous = cursorRow - 1;
-                auto join = size(buffer.line(previous));
-                buffer.erase({previous, static_cast<std::size_t>(join)}, at);
-                cursorRow = previous;
-                cursorColumn = join;
-            }
-        }
-        else if (key == "Delete")
-        {
-            if (cursorColumn < size(current))
-            {
-                auto to = nextChar(current, cursorColumn);
-                buffer.erase(at, {cursorRow, static_cast<std::size_t>(to)});
-            }
-            else if (cursorRow + 1 < ops.rowCount())
-            {
-                buffer.erase(at, {cursorRow + 1, 0});
-            }
-        }
-        else if (key == "Left")
-            cursorColumn = previousChar(current, cursorColumn);
-        else if (key == "Right")
-            cursorColumn = nextChar(current, cursorColumn);
-        else if (key == "Home")
-            cursorColumn = 0;
-        else if (key == "End")
-            cursorColumn = size(current);
-        else if (key == "Up" || key == "Down")
-        {
-            ops.moveVertical(key == "Up" ? -1 : 1);
-            keepDesired = true;
-        }
-        else if (isPrintable(key))
-            ops.insertRaw(key);
-
-        if (!keepDesired)
-            desiredColumn = -1;
-
-        return Outcome::none;
-    }
+        return ops.feedInsert(key);
 
     if (key == "Esc" || key == "C-c")
     {
