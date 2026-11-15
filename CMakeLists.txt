@@ -14,20 +14,6 @@ if (NOT COMMAND set_strict_warnings_level)
     include(${CMAKE_CURRENT_LIST_DIR}/cmake/StrictWarnings.cmake)
 endif ()
 
-# Only eacp's Core is used (its string helpers), so its graphics stay unbuilt.
-# A consumer that already brings eacp keeps its own.
-if (NOT TARGET eacp-core)
-    lockstep_add_package(
-            NAME eacp
-            GITHUB_REPOSITORY eyalamirmusic/eacp
-            GIT_TAG develop
-            SYSTEM YES
-            OPTIONS
-                "EACP_BUILD_GRAPHICS OFF"
-                "EACP_ENABLE_EXAMPLES OFF"
-                "EACP_ENABLE_TESTS OFF")
-endif ()
-
 if (PROJECT_IS_TOP_LEVEL)
     lockstep_add_package(
             NAME NanoTest

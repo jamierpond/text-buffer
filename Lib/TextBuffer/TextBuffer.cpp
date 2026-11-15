@@ -1,12 +1,26 @@
 #include "TextBuffer.h"
-
-#include <eacp/Core/Utils/Strings.h>
+#include "SplitText.h"
 
 #include <algorithm>
 #include <functional>
 
 namespace text
 {
+std::vector<std::string> splitText(std::string_view text)
+{
+    auto lines = std::vector<std::string> {std::string {}};
+
+    for (auto c: text)
+    {
+        if (c == '\n')
+            lines.emplace_back();
+        else if (c != '\r')
+            lines.back() += c;
+    }
+
+    return lines;
+}
+
 namespace
 {
 bool isBefore(Position a, Position b)
@@ -17,12 +31,9 @@ bool isBefore(Position a, Position b)
     return a.column < b.column;
 }
 
-// One string per line; '\r' is dropped anywhere, so CRLF text splits like LF.
-std::vector<std::string> splitIntoLines(std::string_view text)
+char foldAscii(char c)
 {
-    auto withoutCarriageReturns = std::string {text};
-    std::erase(withoutCarriageReturns, '\r');
-    return eacp::Strings::split(withoutCarriageReturns, '\n').getVector();
+    return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
 }
 } // namespace
 
@@ -33,14 +44,19 @@ TextBuffer::TextBuffer(std::string text)
 
 void TextBuffer::setText(std::string_view text)
 {
-    buffer = splitIntoLines(text);
+    buffer = splitText(text);
     undoStack.clear();
     redoStack.clear();
 }
 
 std::string TextBuffer::text() const
 {
-    return eacp::Strings::join(eacp::Vector<std::string> {buffer}, "\n");
+    auto out = std::string {};
+
+    for (std::size_t i = 0; i < buffer.size(); ++i)
+        out += (i == 0 ? "" : "\n") + buffer[i];
+
+    return out;
 }
 
 const std::vector<std::string>& TextBuffer::lines() const
@@ -68,7 +84,7 @@ Position TextBuffer::clamp(Position at) const
 Position TextBuffer::insert(Position at, std::string_view text)
 {
     at = clamp(at);
-    auto pieces = splitIntoLines(text);
+    auto pieces = splitText(text);
     auto& first = buffer[static_cast<std::size_t>(at.line)];
     auto tail = first.substr(at.column);
     first.resize(at.column);
@@ -207,14 +223,17 @@ std::vector<Match> findAll(std::string_view line, std::string_view needle)
         return matches;
 
     auto fold = ignoresCase(needle);
-    auto haystack = fold ? eacp::Strings::toLower(line) : std::string {line};
-    auto pattern = fold ? eacp::Strings::toLower(needle) : std::string {needle};
+    auto equal = [fold](char a, char b)
+    { return fold ? foldAscii(a) == foldAscii(b) : a == b; };
 
     auto at = std::size_t {0};
 
     while (at + needle.size() <= line.size())
     {
-        auto hit = haystack.compare(at, pattern.size(), pattern) == 0;
+        auto hit = std::equal(needle.begin(),
+                              needle.end(),
+                              line.begin() + static_cast<std::ptrdiff_t>(at),
+                              equal);
 
         if (hit)
         {
