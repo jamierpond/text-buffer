@@ -1,11 +1,10 @@
 #include "TextBuffer.h"
+#include "SplitText.h"
 
 #include <algorithm>
 #include <functional>
 
 namespace text
-{
-namespace
 {
 std::vector<std::string> splitText(std::string_view text)
 {
@@ -22,6 +21,8 @@ std::vector<std::string> splitText(std::string_view text)
     return lines;
 }
 
+namespace
+{
 bool isBefore(Position a, Position b)
 {
     if (a.line != b.line)

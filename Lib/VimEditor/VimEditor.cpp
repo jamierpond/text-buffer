@@ -1,5 +1,7 @@
 #include "VimEditor.h"
 
+#include <SplitText.h>
+
 #include <algorithm>
 #include <cctype>
 #include <optional>
@@ -114,21 +116,6 @@ bool isPrintable(const std::string& key)
         return true;
 
     return key.size() == 1 && first >= 0x20 && first != 0x7F;
-}
-
-std::vector<std::string> splitText(std::string_view text)
-{
-    auto lines = std::vector<std::string> {std::string {}};
-
-    for (auto c: text)
-    {
-        if (c == '\n')
-            lines.emplace_back();
-        else if (c != '\r')
-            lines.back() += c;
-    }
-
-    return lines;
 }
 } // namespace
 
@@ -389,7 +376,7 @@ struct EditorOps
 
         if (e.yankLinewise)
         {
-            auto pieces = splitText(e.yank);
+            auto pieces = ::text::splitText(e.yank);
             auto at = after ? e.cursorRow + 1 : e.cursorRow;
 
             for (auto n = 0; n < count; ++n)
