@@ -101,34 +101,32 @@ struct InsertMode : EditorOps
     struct InsertKey
     {
         std::string_view key;
-        void (InsertMode::*run)();
+        void (*run)(InsertMode&);
     };
 
     void runInsertKey(const std::string& key)
     {
         static constexpr InsertKey insertKeys[] = {
-            {"Esc", &InsertMode::leaveInsertMode},
-            {"C-c", &InsertMode::leaveInsertMode},
-            {"Enter", &InsertMode::insertLineBreak},
-            {"Tab", &InsertMode::insertTab},
-            {"Backspace", &InsertMode::deleteCharacterBehindCursor},
-            {"C-h", &InsertMode::deleteCharacterBehindCursor},
-            {"C-w", &InsertMode::deleteWordBehindCursor},
-            {"C-u", &InsertMode::deleteToLineStart},
-            {"Delete", &InsertMode::deleteCharacterUnderCursor},
-            {"Left", &InsertMode::moveLeftInLine},
-            {"Right", &InsertMode::moveRightInLine},
-            {"Home", &InsertMode::moveToLineStart},
-            {"End", &InsertMode::moveToLineEnd},
-            {"Up", &InsertMode::moveUpOneRow},
-            {"Down", &InsertMode::moveDownOneRow},
+            {"Esc", [](InsertMode& mode) { mode.leaveInsertMode(); }},
+            {"C-c", [](InsertMode& mode) { mode.leaveInsertMode(); }},
+            {"Enter", [](InsertMode& mode) { mode.insertLineBreak(); }},
+            {"Tab", [](InsertMode& mode) { mode.insertTab(); }},
+            {"Backspace", [](InsertMode& mode) { mode.deleteCharacterBehindCursor(); }},
+            {"C-h", [](InsertMode& mode) { mode.deleteCharacterBehindCursor(); }},
+            {"C-w", [](InsertMode& mode) { mode.deleteWordBehindCursor(); }},
+            {"C-u", [](InsertMode& mode) { mode.deleteToLineStart(); }},
+            {"Delete", [](InsertMode& mode) { mode.deleteCharacterUnderCursor(); }},
+            {"Left", [](InsertMode& mode) { mode.moveLeftInLine(); }},
+            {"Right", [](InsertMode& mode) { mode.moveRightInLine(); }},
+            {"Home", [](InsertMode& mode) { mode.moveToLineStart(); }},
+            {"End", [](InsertMode& mode) { mode.moveToLineEnd(); }},
+            {"Up", [](InsertMode& mode) { mode.moveUpOneRow(); }},
+            {"Down", [](InsertMode& mode) { mode.moveDownOneRow(); }},
         };
 
-        const auto keyName = std::string_view {key};
-
         for (const auto& insertKey: insertKeys)
-            if (insertKey.key == keyName)
-                return (this->*insertKey.run)();
+            if (insertKey.key == key)
+                return insertKey.run(*this);
 
         if (isPrintable(key))
             insertRaw(key);
