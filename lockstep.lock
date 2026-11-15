@@ -1,0 +1,23 @@
+{
+  "bootstrap": "cmake/lockstep.cmake",
+  "packages": [
+    {
+      "commit": "1b193ebc095338c967af3d658e74b0d6f870bf9b",
+      "hash": "20700974bc778c949a252560f33f72275cfcc58a68904d98fabcb4e47d44bdf9",
+      "kind": "git",
+      "name": "NanoTest",
+      "patches": [],
+      "requestedRef": "main",
+      "submoduleSelection": {
+        "isRecursive": true,
+        "isRestricted": false,
+        "paths": []
+      },
+      "submodules": [],
+      "url": "https://github.com/eyalamirmusic/NanoTest.git",
+      "usesGitLfs": false
+    }
+  ],
+  "root": "7935003d24cde3fe757c370b74ae7ffc872fd6a646ec3ae67d3d555a610719e1",
+  "version": 1
+}

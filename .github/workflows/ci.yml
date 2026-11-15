@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-latest
+          - name: Ubuntu x64
+            os: ubuntu-24.04
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    env:
+      LOCKSTEP_CACHE: ${{ github.workspace }}/.lockstep-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      # lockstep's cache holds the package sources and the library cache, so a
+      # run with an unchanged lock compiles none of the packages again.
+      - uses: actions/cache/restore@v4
+        id: lockstep-cache
+        with:
+          path: .lockstep-cache
+          key: lockstep-${{ matrix.os }}-${{ hashFiles('lockstep.lock', 'cmake/lockstep.cmake') }}
+
+      - uses: extractions/setup-just@v2
+
+      # The strict warnings need Clang 19+: older Clang and GCC flag
+      # `{.field = value}` that leaves other fields at their defaults, and
+      # -Werror makes that fatal. The runner's default Clang is 18.
+      - name: Install Ninja and Clang 19
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build clang-19
+          echo "CC=clang-19" >> "$GITHUB_ENV"
+          echo "CXX=clang++-19" >> "$GITHUB_ENV"
+
+      - name: Install Ninja
+        if: runner.os == 'macOS'
+        run: command -v ninja || brew install ninja
+
+      - run: just build
+      - run: just test
+
+      # Saved even when a test fails, so the next run still finds the packages
+      # and libraries this one built.
+      - uses: actions/cache/save@v4
+        if: always() && steps.lockstep-cache.outputs.cache-hit != 'true'
+        with:
+          path: .lockstep-cache
+          key: ${{ steps.lockstep-cache.outputs.cache-primary-key }}

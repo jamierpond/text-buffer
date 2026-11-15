@@ -1,0 +1,9 @@
+add_executable(TextBufferTests TextBufferTests.cpp)
+target_link_libraries(TextBufferTests PRIVATE NanoTest NanoTestMain TextBuffer)
+set_strict_warnings_level(TextBufferTests)
+nano_discover_tests(TextBufferTests)
+
+add_executable(VimEditorTests VimEditorTests.cpp)
+target_link_libraries(VimEditorTests PRIVATE NanoTest NanoTestMain VimEditor)
+set_strict_warnings_level(VimEditorTests)
+nano_discover_tests(VimEditorTests)
