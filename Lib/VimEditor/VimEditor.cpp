@@ -605,6 +605,90 @@ struct EditorOps
         return Outcome::none;
     }
 
+    Outcome writeFile()
+    {
+        e.markSaved();
+        return Outcome::save;
+    }
+
+    Outcome writeFileAndClose()
+    {
+        e.markSaved();
+        return Outcome::saveAndClose;
+    }
+
+    Outcome closeIfSaved()
+    {
+        if (!e.modified())
+            return Outcome::close;
+
+        e.notice = "E37: No write since last change (add ! to override)";
+        return Outcome::none;
+    }
+
+    Outcome closeDiscardingChanges() { return Outcome::discard; }
+
+    struct ExCommand
+    {
+        std::string_view name;
+        Outcome (EditorOps::*run)();
+    };
+
+    Outcome runCommandLine()
+    {
+        static constexpr ExCommand exCommands[] = {
+            {"w", &EditorOps::writeFile},
+            {"wq", &EditorOps::writeFileAndClose},
+            {"x", &EditorOps::writeFileAndClose},
+            {"q", &EditorOps::closeIfSaved},
+            {"q!", &EditorOps::closeDiscardingChanges},
+        };
+
+        auto ran = e.command;
+        e.command.clear();
+        e.currentMode = Mode::normal;
+
+        for (const auto& exCommand: exCommands)
+            if (exCommand.name == ran)
+                return (this->*exCommand.run)();
+
+        if (!ran.empty())
+            e.notice = "E492: Not an editor command: " + ran;
+
+        return Outcome::none;
+    }
+
+    void eraseCommandCharacterOrLeave()
+    {
+        if (e.command.empty())
+            e.currentMode = Mode::normal;
+        else
+            eraseLastCommandCharacter();
+    }
+
+    Outcome feedCommandLine(const std::string& key)
+    {
+        if (isCancelKey(key))
+        {
+            e.currentMode = Mode::normal;
+            e.command.clear();
+        }
+        else if (key == "Backspace")
+        {
+            eraseCommandCharacterOrLeave();
+        }
+        else if (key == "Enter")
+        {
+            return runCommandLine();
+        }
+        else if (isPrintable(key))
+        {
+            e.command += key;
+        }
+
+        return Outcome::none;
+    }
+
     void moveVertical(int delta)
     {
         auto rows = e.visualRows();
@@ -825,62 +909,7 @@ Outcome Editor::feed(const std::string& key)
         return ops.feedSearch(key);
 
     if (currentMode == Mode::command)
-    {
-        if (key == "Esc" || key == "C-c")
-        {
-            currentMode = Mode::normal;
-            command.clear();
-        }
-        else if (key == "Backspace")
-        {
-            if (command.empty())
-                currentMode = Mode::normal;
-            else
-                command.erase(
-                    static_cast<std::size_t>(previousChar(command, size(command))));
-        }
-        else if (key == "Enter")
-        {
-            auto ran = command;
-            command.clear();
-            currentMode = Mode::normal;
-
-            if (ran == "w")
-            {
-                markSaved();
-                return Outcome::save;
-            }
-
-            if (ran == "wq" || ran == "x")
-            {
-                markSaved();
-                return Outcome::saveAndClose;
-            }
-
-            if (ran == "q")
-            {
-                if (modified())
-                {
-                    notice = "E37: No write since last change (add ! to override)";
-                    return Outcome::none;
-                }
-
-                return Outcome::close;
-            }
-
-            if (ran == "q!")
-                return Outcome::discard;
-
-            if (!ran.empty())
-                notice = "E492: Not an editor command: " + ran;
-        }
-        else if (isPrintable(key))
-        {
-            command += key;
-        }
-
-        return Outcome::none;
-    }
+        return ops.feedCommandLine(key);
 
     if (currentMode == Mode::insert)
     {
