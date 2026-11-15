@@ -22,6 +22,14 @@ std::vector<std::string> splitText(std::string_view text)
     return lines;
 }
 
+bool isBefore(Position a, Position b)
+{
+    if (a.line != b.line)
+        return a.line < b.line;
+
+    return a.column < b.column;
+}
+
 char foldAscii(char c)
 {
     return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
@@ -104,7 +112,7 @@ std::string TextBuffer::erase(Position from, Position to)
     from = clamp(from);
     to = clamp(to);
 
-    if (to.line < from.line || (to.line == from.line && to.column < from.column))
+    if (isBefore(to, from))
         std::swap(from, to);
 
     if (from == to)
