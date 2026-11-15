@@ -7,3 +7,8 @@ add_executable(VimEditorTests VimEditorTests.cpp)
 target_link_libraries(VimEditorTests PRIVATE NanoTest NanoTestMain VimEditor)
 set_strict_warnings_level(VimEditorTests)
 nano_discover_tests(VimEditorTests)
+
+add_executable(VimEditorKeyTests VimEditorKeyTests.cpp)
+target_link_libraries(VimEditorKeyTests PRIVATE NanoTest NanoTestMain VimEditor)
+set_strict_warnings_level(VimEditorKeyTests)
+nano_discover_tests(VimEditorKeyTests)
