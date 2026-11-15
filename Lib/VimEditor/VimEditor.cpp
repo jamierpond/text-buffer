@@ -115,6 +115,8 @@ bool isBackspaceKey(const std::string& key)
     return key == "Backspace" || key == "C-h";
 }
 
+constexpr auto largestCount = 99999;
+
 constexpr auto noPreviousPatternNotice = "E35: No previous regular expression";
 
 bool isPrintable(const std::string& key)
@@ -862,6 +864,633 @@ struct EditorOps
         return Outcome::none;
     }
 
+    struct Range
+    {
+        Position from;
+        Position to;
+    };
+
+    // What normal mode has been typed so far, split into its count and name.
+    struct NormalCommand
+    {
+        int count = 1;
+        bool hasCount = false;
+        std::string name;
+    };
+
+    Position moveLeftOnce(Position p)
+    {
+        p.column = previousChar(line(p.row), p.column);
+        return p;
+    }
+
+    Position moveRightOnce(Position p)
+    {
+        p.column = std::min(nextChar(line(p.row), p.column), size(line(p.row)));
+        return p;
+    }
+
+    Position moveToStartOf(Position p)
+    {
+        p.column = 0;
+        return p;
+    }
+
+    Position moveToFirstNonBlankOf(Position p)
+    {
+        p.column = firstNonBlank(line(p.row));
+        return p;
+    }
+
+    Position moveToEndOf(Position p)
+    {
+        p.column = size(line(p.row));
+        return p;
+    }
+
+    struct Motion
+    {
+        std::string_view name;
+        Position (EditorOps::*move)(Position);
+    };
+
+    static constexpr Motion motions[] = {
+        {"h", &EditorOps::moveLeftOnce},
+        {"l", &EditorOps::moveRightOnce},
+        {"w", &EditorOps::wordForward},
+        {"b", &EditorOps::wordBack},
+        {"e", &EditorOps::wordEnd},
+        {"0", &EditorOps::moveToStartOf},
+        {"^", &EditorOps::moveToFirstNonBlankOf},
+        {"$", &EditorOps::moveToEndOf},
+    };
+
+    static std::optional<Motion> findMotion(std::string_view name)
+    {
+        for (const auto& motion: motions)
+            if (motion.name == name)
+                return motion;
+
+        return std::nullopt;
+    }
+
+    std::optional<Position> applyMotion(std::string_view name, Position from, int count)
+    {
+        auto motion = findMotion(name);
+
+        if (!motion)
+            return std::nullopt;
+
+        for (auto n = 0; n < count; ++n)
+            from = (this->*motion->move)(from);
+
+        return from;
+    }
+
+    void redoOnce()
+    {
+        if (auto restored = e.buffer.redo(toText(cursor())))
+        {
+            e.cursorRow = restored->line;
+            e.cursorColumn = static_cast<int>(restored->column);
+            clampNormal();
+        }
+    }
+
+    // Named keys normal mode treats as motions; any other named key is ignored.
+    static std::optional<std::string> mapNormalKey(const std::string& key)
+    {
+        struct KeyAlias
+        {
+            std::string_view key;
+            std::string_view motion;
+        };
+
+        static constexpr KeyAlias aliases[] = {
+            {"Left", "h"},
+            {"Backspace", "h"},
+            {"Right", "l"},
+            {"Up", "k"},
+            {"Down", "j"},
+            {"Enter", "j"},
+            {"Home", "0"},
+            {"End", "$"},
+        };
+
+        for (const auto& alias: aliases)
+            if (alias.key == key)
+                return std::string {alias.motion};
+
+        if (isPrintable(key))
+            return key;
+
+        return std::nullopt;
+    }
+
+    // A leading 0 is the motion, not a count.
+    std::size_t getCountLength()
+    {
+        auto index = std::size_t {0};
+        const auto& typed = e.pending;
+
+        while (index < typed.size()
+               && std::isdigit(static_cast<unsigned char>(typed[index])) != 0
+               && !(index == 0 && typed[index] == '0'))
+            ++index;
+
+        return index;
+    }
+
+    // vim's own shorthands: S is cc, Y is yy.
+    static std::string expandShorthand(const std::string& name)
+    {
+        if (name == "S")
+            return "cc";
+
+        if (name == "Y")
+            return "yy";
+
+        return name;
+    }
+
+    NormalCommand parsePending()
+    {
+        auto countLength = getCountLength();
+        auto command = NormalCommand {};
+        command.hasCount = countLength > 0;
+
+        if (command.hasCount)
+            command.count = std::clamp(
+                std::stoi(e.pending.substr(0, countLength)), 1, largestCount);
+
+        command.name = expandShorthand(e.pending.substr(countLength));
+        return command;
+    }
+
+    void moveByMotion(const NormalCommand& command)
+    {
+        setCursor(*applyMotion(command.name, cursor(), command.count));
+        clampNormal();
+    }
+
+    void moveByRows(const NormalCommand& command)
+    {
+        moveVertical(command.name == "j" ? command.count : -command.count);
+        clampNormal();
+    }
+
+    void goToLine(const NormalCommand& command)
+    {
+        auto isLastLine = command.name == "G" && !command.hasCount;
+        auto target = isLastLine ? rowCount() - 1 : command.count - 1;
+        e.cursorRow = std::clamp(target, 0, rowCount() - 1);
+        e.cursorColumn = firstNonBlank(currentLine());
+    }
+
+    void deleteCharactersUnderCursor(const NormalCommand& command)
+    {
+        const auto& text = currentLine();
+
+        if (text.empty())
+            return;
+
+        pushUndo();
+        auto to = advance(text, e.cursorColumn, command.count, size(text));
+        erase(cursor(), {e.cursorRow, to});
+        clampNormal();
+    }
+
+    void deleteCharactersBeforeCursor(const NormalCommand& command)
+    {
+        const auto& text = currentLine();
+
+        if (text.empty())
+            return;
+
+        pushUndo();
+        auto from = e.cursorColumn;
+
+        for (auto n = 0; n < command.count && from > 0; ++n)
+            from = previousChar(text, from);
+
+        erase({e.cursorRow, from}, cursor());
+        clampNormal();
+    }
+
+    void insertBeforeCursor(const NormalCommand&)
+    {
+        pushUndo();
+        e.currentMode = Mode::insert;
+    }
+
+    void appendAfterCursor(const NormalCommand&)
+    {
+        pushUndo();
+
+        if (!currentLine().empty())
+            e.cursorColumn = nextChar(currentLine(), e.cursorColumn);
+
+        e.currentMode = Mode::insert;
+    }
+
+    void insertAtFirstNonBlank(const NormalCommand&)
+    {
+        pushUndo();
+        e.cursorColumn = firstNonBlank(currentLine());
+        e.currentMode = Mode::insert;
+    }
+
+    void appendAtLineEnd(const NormalCommand&)
+    {
+        pushUndo();
+        e.cursorColumn = size(currentLine());
+        e.currentMode = Mode::insert;
+    }
+
+    void openLineAt(int at)
+    {
+        pushUndo();
+        e.buffer.insertLines(at, {std::string {}});
+        e.cursorRow = at;
+        e.cursorColumn = 0;
+        e.currentMode = Mode::insert;
+    }
+
+    void openLineBelow(const NormalCommand&) { openLineAt(e.cursorRow + 1); }
+    void openLineAbove(const NormalCommand&) { openLineAt(e.cursorRow); }
+
+    void deleteToLineEnd(const NormalCommand&)
+    {
+        pushUndo();
+        erase(cursor(), {e.cursorRow, size(currentLine())});
+        clampNormal();
+    }
+
+    void changeToLineEnd(const NormalCommand&)
+    {
+        pushUndo();
+        erase(cursor(), {e.cursorRow, size(currentLine())});
+        e.currentMode = Mode::insert;
+    }
+
+    void joinLines(const NormalCommand& command)
+    {
+        pushUndo();
+        join(command.count);
+        clampNormal();
+    }
+
+    void putAfterCursor(const NormalCommand& command)
+    {
+        put(true, command.count);
+        clampNormal();
+    }
+
+    void putBeforeCursor(const NormalCommand& command)
+    {
+        put(false, command.count);
+        clampNormal();
+    }
+
+    void undoChanges(const NormalCommand& command)
+    {
+        for (auto n = 0; n < command.count; ++n)
+        {
+            auto restored = e.buffer.undo(toText(cursor()));
+
+            if (!restored)
+                break;
+
+            e.cursorRow = restored->line;
+            e.cursorColumn = static_cast<int>(restored->column);
+        }
+
+        clampNormal();
+    }
+
+    static char flipCase(char c)
+    {
+        auto byte = static_cast<unsigned char>(c);
+
+        if (std::isupper(byte) != 0)
+            return static_cast<char>(std::tolower(byte));
+
+        if (std::islower(byte) != 0)
+            return static_cast<char>(std::toupper(byte));
+
+        return c;
+    }
+
+    void flipCaseUnderCursor(const NormalCommand& command)
+    {
+        if (currentLine().empty())
+            return;
+
+        pushUndo();
+        auto changed = currentLine();
+
+        for (auto n = 0; n < command.count && e.cursorColumn < size(changed); ++n)
+        {
+            auto& c = changed[static_cast<std::size_t>(e.cursorColumn)];
+            c = flipCase(c);
+            e.cursorColumn = nextChar(changed, e.cursorColumn);
+        }
+
+        e.buffer.replaceLine(e.cursorRow, std::move(changed));
+        clampNormal();
+    }
+
+    void openSearchPrompt(bool forward)
+    {
+        e.currentMode = Mode::search;
+        e.searchForward = forward;
+        e.searchStartRow = e.cursorRow;
+        e.searchStartColumn = e.cursorColumn;
+        e.command.clear();
+        e.liveMatch.reset();
+    }
+
+    void searchForward(const NormalCommand&) { openSearchPrompt(true); }
+    void searchBackward(const NormalCommand&) { openSearchPrompt(false); }
+
+    void repeatSearch(const NormalCommand& command)
+    {
+        if (e.lastPattern.empty())
+        {
+            e.notice = noPreviousPatternNotice;
+            return;
+        }
+
+        auto forward = command.name == "n" ? e.lastForward : !e.lastForward;
+
+        for (auto n = 0; n < command.count; ++n)
+        {
+            auto found =
+                ::text::search(e.buffer.lines(), e.lastPattern, toText(cursor()), forward);
+
+            if (!jumpToMatch(found, e.lastPattern, forward))
+                break;
+        }
+    }
+
+    void openCommandLine(const NormalCommand&)
+    {
+        e.currentMode = Mode::command;
+        e.command.clear();
+    }
+
+    void replaceCharacter(const std::string& replacement)
+    {
+        const auto& text = currentLine();
+
+        if (text.empty() || !isPrintable(replacement))
+            return;
+
+        pushUndo();
+        auto to = nextChar(text, e.cursorColumn);
+        auto changed = text;
+        changed.replace(static_cast<std::size_t>(e.cursorColumn),
+                        static_cast<std::size_t>(to - e.cursorColumn),
+                        replacement);
+        e.buffer.replaceLine(e.cursorRow, std::move(changed));
+    }
+
+    void deleteLinesWithUndo(int count)
+    {
+        pushUndo();
+        deleteLines(count, true);
+    }
+
+    void changeLines(int count)
+    {
+        pushUndo();
+        yankLines(count);
+        auto last = std::min(rowCount(), e.cursorRow + count);
+        e.buffer.eraseLines(e.cursorRow + 1, last - e.cursorRow - 1);
+        e.buffer.replaceLine(e.cursorRow, {});
+        e.cursorColumn = 0;
+        e.currentMode = Mode::insert;
+    }
+
+    void deleteRange(Range range)
+    {
+        pushUndo();
+        erase(range.from, range.to);
+        clampNormal();
+    }
+
+    void changeRange(Range range)
+    {
+        pushUndo();
+        erase(range.from, range.to);
+        e.currentMode = Mode::insert;
+    }
+
+    void yankRange(Range range)
+    {
+        e.yank = extract(range.from, range.to);
+        e.yankLinewise = false;
+    }
+
+    struct Operator
+    {
+        char name;
+        void (EditorOps::*onLines)(int count);
+        void (EditorOps::*onRange)(Range range);
+    };
+
+    static constexpr Operator operators[] = {
+        {'d', &EditorOps::deleteLinesWithUndo, &EditorOps::deleteRange},
+        {'c', &EditorOps::changeLines, &EditorOps::changeRange},
+        {'y', &EditorOps::yankLines, &EditorOps::yankRange},
+    };
+
+    static std::optional<Operator> findOperator(const std::string& name)
+    {
+        if (name.size() < 2)
+            return std::nullopt;
+
+        for (const auto& op: operators)
+            if (op.name == name[0])
+                return op;
+
+        return std::nullopt;
+    }
+
+    std::optional<Range> getTextObjectRange(const std::string& target)
+    {
+        if (target != "iw" && target != "aw")
+            return std::nullopt;
+
+        auto [start, end] = target == "iw" ? innerWord() : aroundWord();
+        return Range {{e.cursorRow, start}, {e.cursorRow, end}};
+    }
+
+    // cw acts like ce on a word, as in vim.
+    std::string getOperatorMotionName(char op, const std::string& target)
+    {
+        if (op == 'c' && target == "w" && classAt(cursor()) != CharClass::space)
+            return "e";
+
+        return target;
+    }
+
+    std::optional<Range> getMotionRange(char op, const std::string& target, int count)
+    {
+        auto from = cursor();
+        auto name = getOperatorMotionName(op, target);
+        auto moved = applyMotion(name, from, count);
+
+        if (!moved)
+            return std::nullopt;
+
+        auto to = *moved;
+
+        if (name == "e")
+            to.column = nextChar(line(to.row), to.column); // inclusive
+
+        if (name == "w" && to.row > from.row)
+            to = {from.row, size(line(from.row))};
+
+        if (to < from)
+            std::swap(from, to);
+
+        return Range {from, to};
+    }
+
+    // d c y followed by themselves, a text object or a motion.
+    void applyOperator(const Operator& op, const NormalCommand& command)
+    {
+        auto target = command.name.substr(1);
+
+        if (target.size() == 1 && target[0] == op.name)
+        {
+            (this->*op.onLines)(command.count);
+            return;
+        }
+
+        auto range = getTextObjectRange(target);
+
+        if (!range)
+            range = getMotionRange(op.name, target, command.count);
+
+        if (range)
+            (this->*op.onRange)(*range);
+    }
+
+    using NormalHandler = void (EditorOps::*)(const NormalCommand&);
+
+    struct NormalKey
+    {
+        std::string_view name;
+        NormalHandler run;
+    };
+
+    static std::optional<NormalHandler> findNormalHandler(const std::string& name)
+    {
+        static constexpr NormalKey normalKeys[] = {
+            {"gg", &EditorOps::goToLine},
+            {"G", &EditorOps::goToLine},
+            {"x", &EditorOps::deleteCharactersUnderCursor},
+            {"X", &EditorOps::deleteCharactersBeforeCursor},
+            {"i", &EditorOps::insertBeforeCursor},
+            {"a", &EditorOps::appendAfterCursor},
+            {"I", &EditorOps::insertAtFirstNonBlank},
+            {"A", &EditorOps::appendAtLineEnd},
+            {"o", &EditorOps::openLineBelow},
+            {"O", &EditorOps::openLineAbove},
+            {"D", &EditorOps::deleteToLineEnd},
+            {"C", &EditorOps::changeToLineEnd},
+            {"J", &EditorOps::joinLines},
+            {"p", &EditorOps::putAfterCursor},
+            {"P", &EditorOps::putBeforeCursor},
+            {"u", &EditorOps::undoChanges},
+            {"~", &EditorOps::flipCaseUnderCursor},
+            {"/", &EditorOps::searchForward},
+            {"?", &EditorOps::searchBackward},
+            {"n", &EditorOps::repeatSearch},
+            {"N", &EditorOps::repeatSearch},
+            {":", &EditorOps::openCommandLine},
+        };
+
+        for (const auto& normalKey: normalKeys)
+            if (normalKey.name == name)
+                return normalKey.run;
+
+        return std::nullopt;
+    }
+
+    // A prefix that waits for the rest of its command.
+    static bool isWaitingForMoreKeys(const std::string& name)
+    {
+        static constexpr std::string_view prefixes[] = {
+            "g", "d", "c", "y", "r", "di", "da", "ci", "ca", "yi", "ya"};
+
+        return std::find(std::begin(prefixes), std::end(prefixes), name)
+               != std::end(prefixes);
+    }
+
+    static bool isRowMotion(const std::string& name)
+    {
+        return name == "j" || name == "k";
+    }
+
+    void runNormalCommand(const NormalCommand& command)
+    {
+        const auto& name = command.name;
+
+        if (!isRowMotion(name))
+            e.desiredColumn = -1;
+
+        if (isWaitingForMoreKeys(name))
+            return;
+
+        e.pending.clear();
+
+        if (findMotion(name))
+            moveByMotion(command);
+        else if (isRowMotion(name))
+            moveByRows(command);
+        else if (auto handler = findNormalHandler(name))
+            (this->**handler)(command);
+        else if (name.size() > 1 && name[0] == 'r')
+            replaceCharacter(name.substr(1));
+        else if (auto op = findOperator(name))
+            applyOperator(*op, command);
+    }
+
+    Outcome feedNormal(const std::string& key)
+    {
+        if (isCancelKey(key))
+        {
+            e.pending.clear();
+            return Outcome::none;
+        }
+
+        if (key == "C-r")
+        {
+            e.pending.clear();
+            redoOnce();
+            return Outcome::none;
+        }
+
+        auto mapped = mapNormalKey(key);
+
+        if (!mapped)
+        {
+            e.pending.clear();
+            return Outcome::none;
+        }
+
+        e.pending += *mapped;
+        auto command = parsePending();
+
+        if (!command.name.empty())
+            runNormalCommand(command);
+
+        return Outcome::none;
+    }
+
     void moveVertical(int delta)
     {
         auto rows = e.visualRows();
@@ -1086,427 +1715,6 @@ Outcome Editor::feed(const std::string& key)
     if (currentMode == Mode::insert)
         return ops.feedInsert(key);
 
-    if (key == "Esc" || key == "C-c")
-    {
-        pending.clear();
-        return Outcome::none;
-    }
-
-    if (key == "C-r")
-    {
-        pending.clear();
-
-        if (auto restored = buffer.redo(EditorOps::toText(ops.cursor())))
-        {
-            cursorRow = restored->line;
-            cursorColumn = static_cast<int>(restored->column);
-            ops.clampNormal();
-        }
-
-        return Outcome::none;
-    }
-
-    auto mapped = key;
-
-    if (key == "Left" || key == "Backspace")
-        mapped = "h";
-    else if (key == "Right")
-        mapped = "l";
-    else if (key == "Up")
-        mapped = "k";
-    else if (key == "Down" || key == "Enter")
-        mapped = "j";
-    else if (key == "Home")
-        mapped = "0";
-    else if (key == "End")
-        mapped = "$";
-    else if (!isPrintable(key))
-    {
-        pending.clear();
-        return Outcome::none;
-    }
-
-    pending += mapped;
-
-    auto index = std::size_t {0};
-
-    while (index < pending.size()
-           && std::isdigit(static_cast<unsigned char>(pending[index])) != 0
-           && !(index == 0 && pending[index] == '0'))
-        ++index;
-
-    auto hasCount = index > 0;
-    auto count = hasCount ? std::stoi(pending.substr(0, index)) : 1;
-    count = std::clamp(count, 1, 99999);
-    auto rest = pending.substr(index);
-
-    if (rest.empty())
-        return Outcome::none; // still typing the count
-
-    // vim's own shorthands: S is cc, Y is yy.
-    if (rest == "S" || rest == "Y")
-    {
-        rest = rest == "S" ? "cc" : "yy";
-        pending = pending.substr(0, index) + rest;
-    }
-
-    auto done = [&] { pending.clear(); };
-    const auto& current = buffer.line(cursorRow);
-
-    auto motion = [&](const std::string& name,
-                      Position from) -> std::optional<Position>
-    {
-        auto p = from;
-
-        for (auto n = 0; n < count; ++n)
-        {
-            if (name == "h")
-                p.column = previousChar(ops.line(p.row), p.column);
-            else if (name == "l")
-                p.column = std::min(nextChar(ops.line(p.row), p.column),
-                                    size(ops.line(p.row)));
-            else if (name == "w")
-                p = ops.wordForward(p);
-            else if (name == "b")
-                p = ops.wordBack(p);
-            else if (name == "e")
-                p = ops.wordEnd(p);
-            else if (name == "0")
-                p.column = 0;
-            else if (name == "^")
-                p.column = firstNonBlank(ops.line(p.row));
-            else if (name == "$")
-                p.column = size(ops.line(p.row));
-            else
-                return std::nullopt;
-        }
-
-        return p;
-    };
-
-    auto enterInsert = [&]
-    {
-        currentMode = Mode::insert;
-        done();
-    };
-
-    if (rest == "h" || rest == "l" || rest == "w" || rest == "b" || rest == "e"
-        || rest == "0" || rest == "^" || rest == "$")
-    {
-        auto target = *motion(rest, ops.cursor());
-        ops.setCursor(target);
-        ops.clampNormal();
-        desiredColumn = -1;
-        done();
-        return Outcome::none;
-    }
-
-    if (rest == "j" || rest == "k")
-    {
-        ops.moveVertical(rest == "j" ? count : -count);
-        ops.clampNormal();
-        done();
-        return Outcome::none; // keeps desiredColumn
-    }
-
-    desiredColumn = -1;
-
-    if (rest == "g" || rest == "d" || rest == "c" || rest == "y" || rest == "r"
-        || rest == "di" || rest == "da" || rest == "ci" || rest == "ca"
-        || rest == "yi" || rest == "ya")
-        return Outcome::none;
-
-    if (rest == "gg" || rest == "G")
-    {
-        auto target = rest == "G" && !hasCount ? ops.rowCount() - 1 : count - 1;
-        cursorRow = std::clamp(target, 0, ops.rowCount() - 1);
-        cursorColumn = firstNonBlank(buffer.line(cursorRow));
-        done();
-        return Outcome::none;
-    }
-
-    if (rest == "x" || rest == "X")
-    {
-        if (!current.empty())
-        {
-            ops.pushUndo();
-
-            if (rest == "x")
-            {
-                auto to = advance(current, cursorColumn, count, size(current));
-                ops.erase(ops.cursor(), {cursorRow, to});
-            }
-            else
-            {
-                auto from = cursorColumn;
-
-                for (auto n = 0; n < count && from > 0; ++n)
-                    from = previousChar(current, from);
-
-                ops.erase({cursorRow, from}, ops.cursor());
-            }
-
-            ops.clampNormal();
-        }
-
-        done();
-        return Outcome::none;
-    }
-
-    if (rest == "i" || rest == "a" || rest == "I" || rest == "A" || rest == "o"
-        || rest == "O")
-    {
-        ops.pushUndo();
-
-        if (rest == "a" && !current.empty())
-            cursorColumn = nextChar(current, cursorColumn);
-        else if (rest == "I")
-            cursorColumn = firstNonBlank(current) < size(current) && !current.empty()
-                               ? firstNonBlank(current)
-                               : 0;
-        else if (rest == "A")
-            cursorColumn = size(current);
-        else if (rest == "o" || rest == "O")
-        {
-            auto at = rest == "o" ? cursorRow + 1 : cursorRow;
-            buffer.insertLines(at, {std::string {}});
-            cursorRow = at;
-            cursorColumn = 0;
-        }
-
-        enterInsert();
-        return Outcome::none;
-    }
-
-    if (rest == "D" || rest == "C")
-    {
-        ops.pushUndo();
-        ops.erase(ops.cursor(), {cursorRow, size(current)});
-
-        if (rest == "C")
-            enterInsert();
-        else
-        {
-            ops.clampNormal();
-            done();
-        }
-
-        return Outcome::none;
-    }
-
-    if (rest == "J")
-    {
-        ops.pushUndo();
-        ops.join(count);
-        ops.clampNormal();
-        done();
-        return Outcome::none;
-    }
-
-    if (rest == "p" || rest == "P")
-    {
-        ops.put(rest == "p", count);
-        ops.clampNormal();
-        done();
-        return Outcome::none;
-    }
-
-    if (rest == "u")
-    {
-        for (auto n = 0; n < count; ++n)
-        {
-            auto restored = buffer.undo(EditorOps::toText(ops.cursor()));
-
-            if (!restored)
-                break;
-
-            cursorRow = restored->line;
-            cursorColumn = static_cast<int>(restored->column);
-        }
-
-        ops.clampNormal();
-        done();
-        return Outcome::none;
-    }
-
-    if (rest == "~")
-    {
-        if (!current.empty())
-        {
-            ops.pushUndo();
-            auto changed = current;
-
-            for (auto n = 0; n < count && cursorColumn < size(changed); ++n)
-            {
-                auto& c = changed[static_cast<std::size_t>(cursorColumn)];
-                auto byte = static_cast<unsigned char>(c);
-
-                if (std::isupper(byte) != 0)
-                    c = static_cast<char>(std::tolower(byte));
-                else if (std::islower(byte) != 0)
-                    c = static_cast<char>(std::toupper(byte));
-
-                cursorColumn = nextChar(changed, cursorColumn);
-            }
-
-            buffer.replaceLine(cursorRow, std::move(changed));
-            ops.clampNormal();
-        }
-
-        done();
-        return Outcome::none;
-    }
-
-    if (rest == "/" || rest == "?")
-    {
-        currentMode = Mode::search;
-        searchForward = rest == "/";
-        searchStartRow = cursorRow;
-        searchStartColumn = cursorColumn;
-        command.clear();
-        liveMatch.reset();
-        done();
-        return Outcome::none;
-    }
-
-    if (rest == "n" || rest == "N")
-    {
-        done();
-
-        if (lastPattern.empty())
-        {
-            notice = "E35: No previous regular expression";
-            return Outcome::none;
-        }
-
-        auto forward = rest == "n" ? lastForward : !lastForward;
-
-        for (auto n = 0; n < count; ++n)
-        {
-            auto found = ::text::search(
-                buffer.lines(),
-                lastPattern,
-                ::text::Position {cursorRow, static_cast<std::size_t>(cursorColumn)},
-                forward);
-
-            if (!ops.jumpToMatch(found, lastPattern, forward))
-                break;
-        }
-
-        return Outcome::none;
-    }
-
-    if (rest == ":")
-    {
-        currentMode = Mode::command;
-        command.clear();
-        done();
-        return Outcome::none;
-    }
-
-    if (rest.size() > 1 && rest[0] == 'r')
-    {
-        auto replacement = rest.substr(1);
-
-        if (!current.empty() && isPrintable(replacement))
-        {
-            ops.pushUndo();
-            auto to = nextChar(current, cursorColumn);
-            auto changed = current;
-            changed.replace(static_cast<std::size_t>(cursorColumn),
-                            static_cast<std::size_t>(to - cursorColumn),
-                            replacement);
-            buffer.replaceLine(cursorRow, std::move(changed));
-        }
-
-        done();
-        return Outcome::none;
-    }
-
-    // Operators: d c y followed by a motion, a text object or themselves.
-    if (rest.size() >= 2 && (rest[0] == 'd' || rest[0] == 'c' || rest[0] == 'y'))
-    {
-        auto op = rest[0];
-        auto target = rest.substr(1);
-        done();
-
-        if (target.size() == 1 && target[0] == op)
-        {
-            if (op == 'y')
-            {
-                ops.yankLines(count);
-                return Outcome::none;
-            }
-
-            ops.pushUndo();
-
-            if (op == 'd')
-            {
-                ops.deleteLines(count, true);
-                return Outcome::none;
-            }
-
-            ops.yankLines(count);
-            auto last = std::min(ops.rowCount(), cursorRow + count);
-            buffer.eraseLines(cursorRow + 1, last - cursorRow - 1);
-            buffer.replaceLine(cursorRow, {});
-            cursorColumn = 0;
-            currentMode = Mode::insert;
-            return Outcome::none;
-        }
-
-        auto from = ops.cursor();
-        auto to = from;
-
-        if (target == "iw" || target == "aw")
-        {
-            auto [start, end] = target == "iw" ? ops.innerWord() : ops.aroundWord();
-            from = {cursorRow, start};
-            to = {cursorRow, end};
-        }
-        else
-        {
-            // cw acts like ce on a word, as in vim.
-            auto name =
-                op == 'c' && target == "w" && ops.classAt(from) != CharClass::space
-                    ? std::string {"e"}
-                    : target;
-            auto moved = motion(name, from);
-
-            if (!moved)
-                return Outcome::none;
-
-            to = *moved;
-
-            if (name == "e")
-                to.column = nextChar(ops.line(to.row), to.column); // inclusive
-
-            if (name == "w" && to.row > from.row)
-                to = {from.row, size(ops.line(from.row))};
-
-            if (to < from)
-                std::swap(from, to);
-        }
-
-        if (op == 'y')
-        {
-            yank = ops.extract(from, to);
-            yankLinewise = false;
-            return Outcome::none;
-        }
-
-        ops.pushUndo();
-        ops.erase(from, to);
-
-        if (op == 'c')
-            currentMode = Mode::insert;
-        else
-            ops.clampNormal();
-
-        return Outcome::none;
-    }
-
-    done();
-    return Outcome::none;
+    return ops.feedNormal(key);
 }
 } // namespace vim
