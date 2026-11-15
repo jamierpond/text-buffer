@@ -408,14 +408,7 @@ struct EditorOps
         auto last = std::min(rowCount(), first + count);
 
         if (yankIt)
-        {
-            e.yank.clear();
-
-            for (auto r = first; r < last; ++r)
-                e.yank += (r == first ? "" : "\n") + line(r);
-
-            e.yankLinewise = true;
-        }
+            yankLines(count);
 
         e.buffer.eraseLines(first, last - first);
 
@@ -426,36 +419,30 @@ struct EditorOps
     void yankLines(int count)
     {
         auto last = std::min(rowCount(), e.cursorRow + count);
-        e.yank.clear();
+        e.yank = line(e.cursorRow);
 
-        for (auto r = e.cursorRow; r < last; ++r)
-            e.yank += (r == e.cursorRow ? "" : "\n") + line(r);
+        for (auto r = e.cursorRow + 1; r < last; ++r)
+            e.yank += "\n" + line(r);
 
         e.yankLinewise = true;
     }
 
-    void put(bool after, int count)
+    void putLines(bool after, int count)
     {
-        if (e.yank.empty() && !e.yankLinewise)
-            return;
+        auto pieces = ::text::splitText(e.yank);
+        auto at = after ? e.cursorRow + 1 : e.cursorRow;
 
-        pushUndo();
+        for (auto n = 0; n < count; ++n)
+            e.buffer.insertLines(at, pieces);
 
-        if (e.yankLinewise)
-        {
-            auto pieces = ::text::splitText(e.yank);
-            auto at = after ? e.cursorRow + 1 : e.cursorRow;
+        e.cursorRow = at;
+        e.cursorColumn = firstNonBlank(line(at));
+    }
 
-            for (auto n = 0; n < count; ++n)
-                e.buffer.insertLines(at, pieces);
-
-            e.cursorRow = at;
-            e.cursorColumn = firstNonBlank(line(at));
-            return;
-        }
-
-        if (after && !line(e.cursorRow).empty())
-            e.cursorColumn = nextChar(line(e.cursorRow), e.cursorColumn);
+    void putCharacters(bool after, int count)
+    {
+        if (after && !currentLine().empty())
+            e.cursorColumn = nextChar(currentLine(), e.cursorColumn);
 
         auto text = std::string {};
 
@@ -463,7 +450,22 @@ struct EditorOps
             text += e.yank;
 
         insertRaw(text);
-        e.cursorColumn = previousChar(line(e.cursorRow), e.cursorColumn);
+        e.cursorColumn = previousChar(currentLine(), e.cursorColumn);
+    }
+
+    bool hasNothingYanked() { return e.yank.empty() && !e.yankLinewise; }
+
+    void put(bool after, int count)
+    {
+        if (hasNothingYanked())
+            return;
+
+        pushUndo();
+
+        if (e.yankLinewise)
+            putLines(after, count);
+        else
+            putCharacters(after, count);
     }
 
     std::pair<int, int> innerWord()
@@ -474,23 +476,8 @@ struct EditorOps
             return {0, 0};
 
         auto cls = classOf(text[static_cast<std::size_t>(e.cursorColumn)]);
-        auto start = e.cursorColumn;
-        auto end = nextChar(text, e.cursorColumn);
-
-        while (start > 0)
-        {
-            auto before = previousChar(text, start);
-
-            if (classOf(text[static_cast<std::size_t>(before)]) != cls)
-                break;
-
-            start = before;
-        }
-
-        while (end < size(text)
-               && classOf(text[static_cast<std::size_t>(end)]) == cls)
-            end = nextChar(text, end);
-
+        auto start = skipClassBack(text, e.cursorColumn, cls);
+        auto end = skipClassForward(text, nextChar(text, e.cursorColumn), cls);
         return {start, end};
     }
 
@@ -516,37 +503,42 @@ struct EditorOps
         return {start, end};
     }
 
+    static std::string getJoinSeparator(const std::string& left,
+                                        const std::string& right)
+    {
+        if (left.empty() || right.empty())
+            return {};
+
+        return " ";
+    }
+
+    // False when there is no next line to join.
+    bool joinNextLine()
+    {
+        if (isLastRow(e.cursorRow))
+            return false;
+
+        const auto& below = line(e.cursorRow + 1);
+        auto next = below.substr(static_cast<std::size_t>(countLeadingBlanks(below)));
+        auto current = line(e.cursorRow);
+
+        while (!current.empty() && current.back() == ' ')
+            current.pop_back();
+
+        auto joinAt = size(current);
+        current += getJoinSeparator(current, next) + next;
+        e.buffer.replaceLine(e.cursorRow, current);
+        e.buffer.eraseLines(e.cursorRow + 1, 1);
+        e.cursorColumn = joinAt;
+        return true;
+    }
+
+    // J joins count lines, so count - 1 joins, and at least one.
     void join(int count)
     {
         for (auto n = 0; n < std::max(1, count - 1); ++n)
-        {
-            if (e.cursorRow + 1 >= rowCount())
+            if (!joinNextLine())
                 return;
-
-            auto next = line(e.cursorRow + 1);
-            auto at = 0;
-
-            while (at < size(next)
-                   && (next[static_cast<std::size_t>(at)] == ' '
-                       || next[static_cast<std::size_t>(at)] == '\t'))
-                ++at;
-
-            next = next.substr(static_cast<std::size_t>(at));
-            auto current = line(e.cursorRow);
-
-            while (!current.empty() && current.back() == ' ')
-                current.pop_back();
-
-            auto joinAt = size(current);
-
-            if (!current.empty() && !next.empty())
-                current += " ";
-
-            current += next;
-            e.buffer.replaceLine(e.cursorRow, current);
-            e.buffer.eraseLines(e.cursorRow + 1, 1);
-            e.cursorColumn = joinAt;
-        }
     }
 
     bool jumpToMatch(const std::optional<::text::SearchResult>& found,
@@ -753,46 +745,17 @@ struct EditorOps
         e.cursorColumn = from;
     }
 
-    int skipSpacesBackFrom(int column)
-    {
-        const auto& text = currentLine();
-
-        while (column > 0
-               && classOf(text[static_cast<std::size_t>(column - 1)])
-                      == CharClass::space)
-            --column;
-
-        return column;
-    }
-
-    int skipClassBackFrom(int column, CharClass cls)
-    {
-        const auto& text = currentLine();
-
-        while (column > 0)
-        {
-            auto before = previousChar(text, column);
-
-            if (classOf(text[static_cast<std::size_t>(before)]) != cls)
-                break;
-
-            column = before;
-        }
-
-        return column;
-    }
-
     // Where C-w deletes back to: past the spaces, then the word before them.
     int getStartOfWordBehindCursor()
     {
-        auto from = skipSpacesBackFrom(e.cursorColumn);
+        const auto& text = currentLine();
+        auto from = skipClassBack(text, e.cursorColumn, CharClass::space);
 
         if (from == 0)
             return from;
 
-        const auto& text = currentLine();
         auto cls = classOf(text[static_cast<std::size_t>(previousChar(text, from))]);
-        return skipClassBackFrom(from, cls);
+        return skipClassBack(text, from, cls);
     }
 
     void deleteWordBehindCursor() { deleteBackToColumn(getStartOfWordBehindCursor()); }
@@ -895,13 +858,8 @@ struct EditorOps
         }
 
         for (const auto& insertKey: insertKeys)
-        {
             if (insertKey.key == key)
-            {
-                (this->*insertKey.run)();
-                return;
-            }
-        }
+                return (this->*insertKey.run)();
 
         if (isPrintable(key))
             insertRaw(key);
@@ -1041,14 +999,22 @@ struct EditorOps
     }
 
     // A leading 0 is the motion, not a count.
+    static bool isCountDigit(const std::string& typed, std::size_t index)
+    {
+        auto c = typed[index];
+
+        if (std::isdigit(static_cast<unsigned char>(c)) == 0)
+            return false;
+
+        return index > 0 || c != '0';
+    }
+
     std::size_t getCountLength()
     {
         auto index = std::size_t {0};
         const auto& typed = e.pending;
 
-        while (index < typed.size()
-               && std::isdigit(static_cast<unsigned char>(typed[index])) != 0
-               && !(index == 0 && typed[index] == '0'))
+        while (index < typed.size() && isCountDigit(typed, index))
             ++index;
 
         return index;
@@ -1382,10 +1348,13 @@ struct EditorOps
     // cw acts like ce on a word, as in vim.
     std::string getOperatorMotionName(char op, const std::string& target)
     {
-        if (op == 'c' && target == "w" && classAt(cursor()) != CharClass::space)
-            return "e";
+        if (op != 'c' || target != "w")
+            return target;
 
-        return target;
+        if (classAt(cursor()) == CharClass::space)
+            return target;
+
+        return "e";
     }
 
     std::optional<Range> getMotionRange(char op, const std::string& target, int count)
@@ -1499,6 +1468,22 @@ struct EditorOps
             return;
 
         e.pending.clear();
+        dispatchNormalCommand(command);
+    }
+
+    void runReplaceOrOperator(const NormalCommand& command)
+    {
+        const auto& name = command.name;
+
+        if (name.size() > 1 && name[0] == 'r')
+            replaceCharacter(name.substr(1));
+        else if (auto op = findOperator(name))
+            applyOperator(*op, command);
+    }
+
+    void dispatchNormalCommand(const NormalCommand& command)
+    {
+        const auto& name = command.name;
 
         if (findMotion(name))
             moveByMotion(command);
@@ -1506,10 +1491,8 @@ struct EditorOps
             moveByRows(command);
         else if (auto handler = findNormalHandler(name))
             (this->**handler)(command);
-        else if (name.size() > 1 && name[0] == 'r')
-            replaceCharacter(name.substr(1));
-        else if (auto op = findOperator(name))
-            applyOperator(*op, command);
+        else
+            runReplaceOrOperator(command);
     }
 
     Outcome feedNormal(const std::string& key)
@@ -1544,6 +1527,14 @@ struct EditorOps
         return Outcome::none;
     }
 
+    bool isStoppingOnSoftBreak(int column, const Editor::VisualRow& row, bool lastOfLine)
+    {
+        if (column < row.end || row.end <= row.start)
+            return false;
+
+        return !lastOfLine || e.currentMode != Mode::insert;
+    }
+
     void moveVertical(int delta)
     {
         auto rows = e.visualRows();
@@ -1561,8 +1552,7 @@ struct EditorOps
         // Landing on a soft break would put the cursor on the next row.
         auto lastOfLine = row.end >= size(text);
 
-        if (column >= row.end && row.end > row.start
-            && (!lastOfLine || e.currentMode != Mode::insert))
+        if (isStoppingOnSoftBreak(column, row, lastOfLine))
             column = previousChar(text, row.end);
 
         e.cursorRow = row.line;
