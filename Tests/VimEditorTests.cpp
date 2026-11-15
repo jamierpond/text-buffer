@@ -505,3 +505,29 @@ auto tInsertCtrlC = test("VimEditor/C-c in insert mode is Esc") = []
     check(editor.text() == "abcd");
     check(editor.column() == 3);
 };
+
+auto tPendingKeys = test("VimEditor/an operator waits as pending keys until its motion") = []
+{
+    auto editor = Editor {"hello world"};
+    check(!editor.hasPendingKeys());
+
+    editor.feed("d");
+    check(editor.hasPendingKeys());
+
+    editor.feed("w");
+    check(!editor.hasPendingKeys());
+    check(editor.text() == "world");
+};
+
+auto tSetCursor = test("VimEditor/setCursor clamps onto the last character in normal mode") = []
+{
+    constexpr auto pastTheEnd = 100;
+    auto editor = Editor {"hello"};
+
+    editor.setCursor(0, pastTheEnd);
+    check(editor.column() == 4);
+
+    editor.feed("A");
+    editor.setCursor(0, pastTheEnd);
+    check(editor.column() == 5);
+};

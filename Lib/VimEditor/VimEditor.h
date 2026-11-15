@@ -53,6 +53,12 @@ public:
     void markSaved();
 
     Mode mode() const;
+
+    // A count or operator typed in normal mode that waits for more keys ("2", "d", "ci").
+    bool hasPendingKeys() const;
+
+    // Clamped to the text; in normal mode, onto the last character at most.
+    void setCursor(int row, int column);
     const std::vector<std::string>& lines() const;
     int row() const;
     int column() const;

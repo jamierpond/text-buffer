@@ -590,6 +590,19 @@ Mode Editor::mode() const
     return currentMode;
 }
 
+bool Editor::hasPendingKeys() const
+{
+    return !pending.empty();
+}
+
+void Editor::setCursor(int row, int column)
+{
+    auto ops = EditorOps {*this};
+    ops.setCursor({row, column});
+    ops.clampNormal();
+    desiredColumn = -1;
+}
+
 const std::vector<std::string>& Editor::lines() const
 {
     return buffer.lines();
