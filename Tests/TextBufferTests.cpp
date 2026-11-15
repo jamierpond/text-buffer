@@ -171,3 +171,17 @@ auto tSearchOnlyMatch =
     check(!search(lines, "zzz", {0, 0}, true));
     check(!search(std::vector<std::string> {}, "a", {}, true));
 };
+
+auto tCarriageReturns = test("TextBuffer/carriage returns are dropped wherever they are") = []
+{
+    auto buffer = TextBuffer {"a\r\nb\rc\n"};
+    check(buffer.text() == "a\nbc\n");
+    buffer.insert({0, 1}, "x\r\ny");
+    check(buffer.text() == "ax\ny\nbc\n");
+};
+
+auto tFoldingIsAsciiOnly = test("TextBuffer/smartcase folds ASCII only") = []
+{
+    check(findAll("\xC3\x89t\xC3\xA9", "\xC3\xA9").size() == 1);
+    check(findAll("ABC abc", "abc").size() == 2);
+};

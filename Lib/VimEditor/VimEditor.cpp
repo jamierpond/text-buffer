@@ -1,6 +1,6 @@
 #include "VimEditor.h"
 
-#include <SplitText.h>
+#include <eacp/Core/Utils/Strings.h>
 
 #include <algorithm>
 #include <cctype>
@@ -376,7 +376,7 @@ struct EditorOps
 
         if (e.yankLinewise)
         {
-            auto pieces = ::text::splitText(e.yank);
+            auto pieces = eacp::Strings::split(e.yank, '\n').getVector();
             auto at = after ? e.cursorRow + 1 : e.cursorRow;
 
             for (auto n = 0; n < count; ++n)
