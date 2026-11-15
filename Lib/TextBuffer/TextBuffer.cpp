@@ -283,18 +283,32 @@ std::optional<Match> findLastMatch(const Matches& matches,
     return *found;
 }
 
+bool isPastStart(const Match& match, const SearchRequest& request)
+{
+    if (request.forward)
+        return match.start > request.from.column;
+
+    return match.start < request.from.column;
+}
+
+std::optional<Match> findInSearchOrder(const Matches& matches,
+                                       const SearchRequest& request,
+                                       const std::function<bool(const Match&)>& isWanted)
+{
+    if (request.forward)
+        return findFirstMatch(matches, isWanted);
+
+    return findLastMatch(matches, isWanted);
+}
+
 // The match on the start line that the search reaches before leaving it.
 std::optional<Match> findMatchPastStart(const Matches& onStartLine,
                                         const SearchRequest& request)
 {
-    auto column = request.from.column;
-
-    if (request.forward)
-        return findFirstMatch(onStartLine,
-                              [column](const Match& m) { return m.start > column; });
-
-    return findLastMatch(onStartLine,
-                         [column](const Match& m) { return m.start < column; });
+    return findInSearchOrder(onStartLine,
+                             request,
+                             [&request](const Match& match)
+                             { return isPastStart(match, request); });
 }
 
 // The match on the start line that the search reaches only after wrapping
@@ -302,14 +316,10 @@ std::optional<Match> findMatchPastStart(const Matches& onStartLine,
 std::optional<Match> findMatchBackAtStart(const Matches& onStartLine,
                                           const SearchRequest& request)
 {
-    auto column = request.from.column;
-
-    if (request.forward)
-        return findFirstMatch(onStartLine,
-                              [column](const Match& m) { return m.start <= column; });
-
-    return findLastMatch(onStartLine,
-                         [column](const Match& m) { return m.start >= column; });
+    return findInSearchOrder(onStartLine,
+                             request,
+                             [&request](const Match& match)
+                             { return !isPastStart(match, request); });
 }
 
 int getLineCount(const SearchRequest& request)
