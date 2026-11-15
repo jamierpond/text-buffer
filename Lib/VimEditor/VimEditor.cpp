@@ -80,11 +80,22 @@ enum class CharClass
     punctuation
 };
 
+// Bytes of multi-byte characters count as word characters.
+bool isWordByte(char c)
+{
+    auto byte = static_cast<unsigned char>(c);
+
+    if (byte >= 0x80)
+        return true;
+
+    return std::isalnum(byte) != 0 || c == '_';
+}
+
 CharClass classOf(char c)
 {
     auto byte = static_cast<unsigned char>(c);
 
-    if (byte >= 0x80 || std::isalnum(byte) != 0 || c == '_')
+    if (isWordByte(c))
         return CharClass::word;
 
     if (std::isspace(byte) != 0)
@@ -93,16 +104,62 @@ CharClass classOf(char c)
     return CharClass::punctuation;
 }
 
+bool isBlank(char c)
+{
+    return c == ' ' || c == '\t';
+}
+
+int countLeadingBlanks(const std::string& line)
+{
+    auto blanks = std::find_if_not(line.begin(), line.end(), isBlank);
+    return static_cast<int>(blanks - line.begin());
+}
+
 int firstNonBlank(const std::string& line)
 {
-    auto at = 0;
-
-    while (at < size(line)
-           && (line[static_cast<std::size_t>(at)] == ' '
-               || line[static_cast<std::size_t>(at)] == '\t'))
-        ++at;
-
+    auto at = countLeadingBlanks(line);
     return at >= size(line) ? lastCharStart(line) : at;
+}
+
+int skipClassBack(const std::string& text, int column, CharClass cls)
+{
+    while (column > 0)
+    {
+        auto before = previousChar(text, column);
+
+        if (classOf(text[static_cast<std::size_t>(before)]) != cls)
+            break;
+
+        column = before;
+    }
+
+    return column;
+}
+
+int skipClassForward(const std::string& text, int column, CharClass cls)
+{
+    while (column < size(text) && classOf(text[static_cast<std::size_t>(column)]) == cls)
+        column = nextChar(text, column);
+
+    return column;
+}
+
+// Where a soft-wrapped row that starts at `start` ends, given that at most
+// `cut` fits: just after the last space if there is one, else at `cut`.
+int getWrapEnd(const std::string& text, int start, int cut)
+{
+    auto space = text.substr(0, static_cast<std::size_t>(cut))
+                     .rfind(' ', static_cast<std::size_t>(cut - 1));
+
+    if (space == std::string::npos)
+        return cut;
+
+    auto spaceColumn = static_cast<int>(space);
+
+    if (spaceColumn < start || spaceColumn + 1 <= start)
+        return cut;
+
+    return spaceColumn + 1;
 }
 
 bool isCancelKey(const std::string& key)
@@ -230,84 +287,80 @@ struct EditorOps
         return true;
     }
 
+    bool isLastRow(int row) { return row + 1 >= rowCount(); }
+
+    // Stops on the next non-blank character or on an empty line.
+    Position skipBlanksForward(Position p)
+    {
+        while (true)
+        {
+            p.column = skipClassForward(line(p.row), p.column, CharClass::space);
+
+            if (!atLineEnd(p) || isLastRow(p.row))
+                return p;
+
+            p = {p.row + 1, 0};
+
+            if (line(p.row).empty())
+                return p;
+        }
+    }
+
     Position wordForward(Position p)
     {
         auto start = classAt(p);
 
         if (start != CharClass::space)
-            while (!atLineEnd(p) && classAt(p) == start)
-                p.column = nextChar(line(p.row), p.column);
+            p.column = skipClassForward(line(p.row), p.column, start);
 
-        while (true)
-        {
-            if (atLineEnd(p))
-            {
-                if (p.row + 1 >= rowCount())
-                    return p;
+        return skipBlanksForward(p);
+    }
 
-                ++p.row;
-                p.column = 0;
+    // False when the text ends first.
+    bool skipSpacesForward(Position& p)
+    {
+        while (classAt(p) == CharClass::space)
+            if (!forward(p))
+                return false;
 
-                if (line(p.row).empty())
-                    return p;
+        return true;
+    }
 
-                continue;
-            }
-
-            if (classAt(p) != CharClass::space)
-                return p;
-
-            p.column = nextChar(line(p.row), p.column);
-        }
+    Position moveToLastOfClass(Position p)
+    {
+        const auto& text = line(p.row);
+        auto end = skipClassForward(text, p.column, classAt(p));
+        p.column = previousChar(text, end);
+        return p;
     }
 
     Position wordEnd(Position p)
     {
-        if (!forward(p))
+        if (!forward(p) || !skipSpacesForward(p))
             return p;
 
-        while (classAt(p) == CharClass::space)
-            if (!forward(p))
-                return p;
+        return moveToLastOfClass(p);
+    }
 
-        auto cls = classAt(p);
+    // Stops on an empty line; false when the text starts first.
+    bool skipSpacesBackward(Position& p)
+    {
+        while (classAt(p) == CharClass::space && !line(p.row).empty())
+            if (!backward(p))
+                return false;
 
-        while (true)
-        {
-            auto next = nextChar(line(p.row), p.column);
-
-            if (next >= size(line(p.row))
-                || classOf(line(p.row)[static_cast<std::size_t>(next)]) != cls)
-                return p;
-
-            p.column = next;
-        }
+        return true;
     }
 
     Position wordBack(Position p)
     {
-        if (!backward(p))
+        if (!backward(p) || !skipSpacesBackward(p))
             return p;
-
-        while (classAt(p) == CharClass::space && !line(p.row).empty())
-            if (!backward(p))
-                return p;
 
         if (line(p.row).empty())
             return p;
 
-        auto cls = classAt(p);
-
-        while (p.column > 0)
-        {
-            auto before = previousChar(line(p.row), p.column);
-
-            if (classOf(line(p.row)[static_cast<std::size_t>(before)]) != cls)
-                break;
-
-            p.column = before;
-        }
-
+        p.column = skipClassBack(line(p.row), p.column, classAt(p));
         return p;
     }
 
@@ -1643,13 +1696,7 @@ std::vector<Editor::VisualRow> Editor::visualRows() const
             while (codepoints(text, start, size(text)) > wrapWidth)
             {
                 auto cut = advance(text, start, wrapWidth, size(text));
-                auto space = text.substr(0, static_cast<std::size_t>(cut))
-                                 .rfind(' ', static_cast<std::size_t>(cut - 1));
-                auto end = space != std::string::npos
-                                   && static_cast<int>(space) >= start
-                                   && static_cast<int>(space) + 1 > start
-                               ? static_cast<int>(space) + 1
-                               : cut;
+                auto end = getWrapEnd(text, start, cut);
                 rows.push_back({lineIndex, start, end});
                 start = end;
             }
