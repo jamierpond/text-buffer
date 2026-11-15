@@ -758,9 +758,22 @@ struct EditorOps
         return skipClassBack(text, from, cls);
     }
 
-    void deleteWordBehindCursor() { deleteBackToColumn(getStartOfWordBehindCursor()); }
+    // At the start of a line, C-w and C-u join it to the one above.
+    void deleteWordBehindCursor()
+    {
+        if (e.cursorColumn == 0)
+            joinWithPreviousLine();
+        else
+            deleteBackToColumn(getStartOfWordBehindCursor());
+    }
 
-    void deleteToLineStart() { deleteBackToColumn(0); }
+    void deleteToLineStart()
+    {
+        if (e.cursorColumn == 0)
+            joinWithPreviousLine();
+        else
+            deleteBackToColumn(0);
+    }
 
     void joinWithPreviousLine()
     {
@@ -821,12 +834,6 @@ struct EditorOps
         void (EditorOps::*run)();
     };
 
-    // C-w and C-u at the start of a line join it to the one above, like Backspace.
-    bool isDeletingBackInLine(const std::string& key)
-    {
-        return (key == "C-w" || key == "C-u") && e.cursorColumn > 0;
-    }
-
     void runInsertKey(const std::string& key)
     {
         static constexpr InsertKey insertKeys[] = {
@@ -836,8 +843,8 @@ struct EditorOps
             {"Tab", &EditorOps::insertTab},
             {"Backspace", &EditorOps::deleteCharacterBehindCursor},
             {"C-h", &EditorOps::deleteCharacterBehindCursor},
-            {"C-w", &EditorOps::deleteCharacterBehindCursor},
-            {"C-u", &EditorOps::deleteCharacterBehindCursor},
+            {"C-w", &EditorOps::deleteWordBehindCursor},
+            {"C-u", &EditorOps::deleteToLineStart},
             {"Delete", &EditorOps::deleteCharacterUnderCursor},
             {"Left", &EditorOps::moveLeftInLine},
             {"Right", &EditorOps::moveRightInLine},
@@ -846,16 +853,6 @@ struct EditorOps
             {"Up", &EditorOps::moveUpOneRow},
             {"Down", &EditorOps::moveDownOneRow},
         };
-
-        if (isDeletingBackInLine(key))
-        {
-            if (key == "C-w")
-                deleteWordBehindCursor();
-            else
-                deleteToLineStart();
-
-            return;
-        }
 
         for (const auto& insertKey: insertKeys)
             if (insertKey.key == key)
