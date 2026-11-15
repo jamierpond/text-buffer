@@ -60,6 +60,11 @@ private:
         Position cursor;
     };
 
+    // Pushes the current text onto saveTo and restores the top of takeFrom.
+    std::optional<Position> restoreSnapshot(std::vector<Snapshot>& takeFrom,
+                                            std::vector<Snapshot>& saveTo,
+                                            Position cursor);
+
     std::vector<std::string> buffer {std::string {}};
     std::vector<Snapshot> undoStack;
     std::vector<Snapshot> redoStack;

@@ -168,24 +168,24 @@ void TextBuffer::snapshot(Position cursor)
 
 std::optional<Position> TextBuffer::undo(Position cursor)
 {
-    if (undoStack.empty())
-        return std::nullopt;
-
-    redoStack.push_back({buffer, cursor});
-    auto restored = std::move(undoStack.back());
-    undoStack.pop_back();
-    buffer = std::move(restored.lines);
-    return clamp(restored.cursor);
+    return restoreSnapshot(undoStack, redoStack, cursor);
 }
 
 std::optional<Position> TextBuffer::redo(Position cursor)
 {
-    if (redoStack.empty())
+    return restoreSnapshot(redoStack, undoStack, cursor);
+}
+
+std::optional<Position> TextBuffer::restoreSnapshot(std::vector<Snapshot>& takeFrom,
+                                                    std::vector<Snapshot>& saveTo,
+                                                    Position cursor)
+{
+    if (takeFrom.empty())
         return std::nullopt;
 
-    undoStack.push_back({buffer, cursor});
-    auto restored = std::move(redoStack.back());
-    redoStack.pop_back();
+    saveTo.push_back({buffer, cursor});
+    auto restored = std::move(takeFrom.back());
+    takeFrom.pop_back();
     buffer = std::move(restored.lines);
     return clamp(restored.cursor);
 }
