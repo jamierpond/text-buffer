@@ -60,19 +60,19 @@ struct NormalMode : EditorOps
         Position (NormalMode::*move)(Position);
     };
 
-    static constexpr Motion motions[] = {
-        {"h", &NormalMode::moveLeftOnce},
-        {"l", &NormalMode::moveRightOnce},
-        {"w", &NormalMode::wordForward},
-        {"b", &NormalMode::wordBack},
-        {"e", &NormalMode::wordEnd},
-        {"0", &NormalMode::moveToStartOf},
-        {"^", &NormalMode::moveToFirstNonBlankOf},
-        {"$", &NormalMode::moveToEndOf},
-    };
-
     static std::optional<Motion> findMotion(std::string_view name)
     {
+        static constexpr Motion motions[] = {
+            {"h", &NormalMode::moveLeftOnce},
+            {"l", &NormalMode::moveRightOnce},
+            {"w", &NormalMode::wordForward},
+            {"b", &NormalMode::wordBack},
+            {"e", &NormalMode::wordEnd},
+            {"0", &NormalMode::moveToStartOf},
+            {"^", &NormalMode::moveToFirstNonBlankOf},
+            {"$", &NormalMode::moveToEndOf},
+        };
+
         for (const auto& motion: motions)
             if (motion.name == name)
                 return motion;
@@ -453,16 +453,16 @@ struct NormalMode : EditorOps
         void (NormalMode::*onRange)(Range range);
     };
 
-    static constexpr Operator operators[] = {
-        {'d', &NormalMode::deleteLinesWithUndo, &NormalMode::deleteRange},
-        {'c', &NormalMode::changeLines, &NormalMode::changeRange},
-        {'y', &NormalMode::yankLines, &NormalMode::yankRange},
-    };
-
     static std::optional<Operator> findOperator(const std::string& name)
     {
         if (name.size() < 2)
             return std::nullopt;
+
+        static constexpr Operator operators[] = {
+            {'d', &NormalMode::deleteLinesWithUndo, &NormalMode::deleteRange},
+            {'c', &NormalMode::changeLines, &NormalMode::changeRange},
+            {'y', &NormalMode::yankLines, &NormalMode::yankRange},
+        };
 
         for (const auto& op: operators)
             if (op.name == name[0])
