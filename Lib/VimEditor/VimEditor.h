@@ -101,6 +101,9 @@ public:
 
 private:
     friend struct EditorOps;
+    friend struct PromptMode;
+    friend struct InsertMode;
+    friend struct NormalMode;
 
     ::text::TextBuffer buffer;
     int cursorRow = 0;
