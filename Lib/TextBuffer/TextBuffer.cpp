@@ -1,6 +1,7 @@
 #include "TextBuffer.h"
 
 #include <algorithm>
+#include <functional>
 
 namespace text
 {
@@ -239,6 +240,118 @@ std::vector<Match> findAll(std::string_view line, std::string_view needle)
     return matches;
 }
 
+namespace
+{
+using Matches = std::vector<Match>;
+
+struct SearchRequest
+{
+    std::span<const std::string> lines;
+    std::string_view needle;
+    Position from;
+    bool forward = true;
+};
+
+std::optional<Match> findFirstMatch(const Matches& matches,
+                                    const std::function<bool(const Match&)>& isWanted)
+{
+    auto found = std::find_if(matches.begin(), matches.end(), isWanted);
+
+    if (found == matches.end())
+        return std::nullopt;
+
+    return *found;
+}
+
+std::optional<Match> findLastMatch(const Matches& matches,
+                                   const std::function<bool(const Match&)>& isWanted)
+{
+    auto found = std::find_if(matches.rbegin(), matches.rend(), isWanted);
+
+    if (found == matches.rend())
+        return std::nullopt;
+
+    return *found;
+}
+
+// The match on the start line that the search reaches before leaving it.
+std::optional<Match> findMatchPastStart(const Matches& onStartLine,
+                                        const SearchRequest& request)
+{
+    auto column = request.from.column;
+
+    if (request.forward)
+        return findFirstMatch(onStartLine,
+                              [column](const Match& m) { return m.start > column; });
+
+    return findLastMatch(onStartLine,
+                         [column](const Match& m) { return m.start < column; });
+}
+
+// The match on the start line that the search reaches only after wrapping
+// all the way round to it.
+std::optional<Match> findMatchBackAtStart(const Matches& onStartLine,
+                                          const SearchRequest& request)
+{
+    auto column = request.from.column;
+
+    if (request.forward)
+        return findFirstMatch(onStartLine,
+                              [column](const Match& m) { return m.start <= column; });
+
+    return findLastMatch(onStartLine,
+                         [column](const Match& m) { return m.start >= column; });
+}
+
+int getLineCount(const SearchRequest& request)
+{
+    return static_cast<int>(request.lines.size());
+}
+
+int getLineStepsAway(const SearchRequest& request, int steps)
+{
+    auto lineCount = getLineCount(request);
+    auto offset = request.forward ? steps : lineCount - steps;
+    return (request.from.line + offset) % lineCount;
+}
+
+bool hasWrapped(const SearchRequest& request, int line)
+{
+    return request.forward ? line < request.from.line : line > request.from.line;
+}
+
+Matches findAllOnLine(const SearchRequest& request, int line)
+{
+    return findAll(request.lines[static_cast<std::size_t>(line)], request.needle);
+}
+
+// Every line but the start one, in the order the search visits them.
+std::optional<SearchResult> searchOtherLines(const SearchRequest& request)
+{
+    for (auto steps = 1; steps < getLineCount(request); ++steps)
+    {
+        auto line = getLineStepsAway(request, steps);
+        auto found = findAllOnLine(request, line);
+
+        if (found.empty())
+            continue;
+
+        const auto& match = request.forward ? found.front() : found.back();
+        return SearchResult {
+            {line, match.start}, match.length, hasWrapped(request, line)};
+    }
+
+    return std::nullopt;
+}
+
+SearchResult makeStartLineResult(const SearchRequest& request,
+                                 const Match& match,
+                                 bool wrapped)
+{
+    return SearchResult {{request.from.line, match.start}, match.length, wrapped};
+}
+} // namespace
+
 std::optional<SearchResult> search(std::span<const std::string> lines,
                                    std::string_view needle,
                                    Position from,
@@ -247,53 +360,18 @@ std::optional<SearchResult> search(std::span<const std::string> lines,
     if (lines.empty() || needle.empty())
         return std::nullopt;
 
-    auto count = static_cast<int>(lines.size());
-    from.line = std::clamp(from.line, 0, count - 1);
+    from.line = std::clamp(from.line, 0, static_cast<int>(lines.size()) - 1);
+    auto request = SearchRequest {lines, needle, from, forward};
+    auto onStartLine = findAllOnLine(request, from.line);
 
-    auto matchesOn = [&](int line)
-    { return findAll(lines[static_cast<std::size_t>(line)], needle); };
+    if (auto match = findMatchPastStart(onStartLine, request))
+        return makeStartLineResult(request, *match, false);
 
-    auto result = [&](int line, const Match& match, bool wrapped)
-    { return SearchResult {{line, match.start}, match.length, wrapped}; };
+    if (auto found = searchOtherLines(request))
+        return found;
 
-    if (forward)
-    {
-        for (const auto& match: matchesOn(from.line))
-            if (match.start > from.column)
-                return result(from.line, match, false);
-
-        for (auto line = from.line + 1; line < count; ++line)
-            if (auto found = matchesOn(line); !found.empty())
-                return result(line, found.front(), false);
-
-        for (auto line = 0; line < from.line; ++line)
-            if (auto found = matchesOn(line); !found.empty())
-                return result(line, found.front(), true);
-
-        for (const auto& match: matchesOn(from.line))
-            if (match.start <= from.column)
-                return result(from.line, match, true);
-
-        return std::nullopt;
-    }
-
-    auto before = matchesOn(from.line);
-
-    for (auto it = before.rbegin(); it != before.rend(); ++it)
-        if (it->start < from.column)
-            return result(from.line, *it, false);
-
-    for (auto line = from.line - 1; line >= 0; --line)
-        if (auto found = matchesOn(line); !found.empty())
-            return result(line, found.back(), false);
-
-    for (auto line = count - 1; line > from.line; --line)
-        if (auto found = matchesOn(line); !found.empty())
-            return result(line, found.back(), true);
-
-    for (auto it = before.rbegin(); it != before.rend(); ++it)
-        if (it->start >= from.column)
-            return result(from.line, *it, true);
+    if (auto match = findMatchBackAtStart(onStartLine, request))
+        return makeStartLineResult(request, *match, true);
 
     return std::nullopt;
 }
