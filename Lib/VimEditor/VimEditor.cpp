@@ -105,6 +105,18 @@ int firstNonBlank(const std::string& line)
     return at >= size(line) ? lastCharStart(line) : at;
 }
 
+bool isCancelKey(const std::string& key)
+{
+    return key == "Esc" || key == "C-c";
+}
+
+bool isBackspaceKey(const std::string& key)
+{
+    return key == "Backspace" || key == "C-h";
+}
+
+constexpr auto noPreviousPatternNotice = "E35: No previous regular expression";
+
 bool isPrintable(const std::string& key)
 {
     if (key.empty())
@@ -501,6 +513,98 @@ struct EditorOps
         return true;
     }
 
+    void restoreSearchStart()
+    {
+        e.cursorRow = e.searchStartRow;
+        e.cursorColumn = e.searchStartColumn;
+        e.currentMode = Mode::normal;
+        e.command.clear();
+        e.liveMatch.reset();
+    }
+
+    std::optional<::text::SearchResult> findFromSearchStart(const std::string& pattern)
+    {
+        return ::text::search(
+            e.buffer.lines(),
+            pattern,
+            {e.searchStartRow, static_cast<std::size_t>(e.searchStartColumn)},
+            e.searchForward);
+    }
+
+    void acceptSearch()
+    {
+        auto pattern = e.command.empty() ? e.lastPattern : e.command;
+        restoreSearchStart();
+
+        if (pattern.empty())
+        {
+            e.notice = noPreviousPatternNotice;
+            return;
+        }
+
+        e.lastPattern = pattern;
+        e.lastForward = e.searchForward;
+        jumpToMatch(findFromSearchStart(pattern), pattern, e.searchForward);
+    }
+
+    void eraseLastCommandCharacter()
+    {
+        e.command.erase(
+            static_cast<std::size_t>(previousChar(e.command, size(e.command))));
+    }
+
+    void showLiveMatch()
+    {
+        auto found =
+            e.command.empty() ? std::nullopt : findFromSearchStart(e.command);
+        e.liveMatch.reset();
+
+        if (!found)
+        {
+            e.cursorRow = e.searchStartRow;
+            e.cursorColumn = e.searchStartColumn;
+            return;
+        }
+
+        e.cursorRow = found->at.line;
+        e.cursorColumn = static_cast<int>(found->at.column);
+        e.liveMatch = Editor::SearchMatch {found->at.line,
+                                           static_cast<int>(found->at.column),
+                                           static_cast<int>(found->length)};
+    }
+
+    void editSearchPattern(const std::string& key)
+    {
+        if (isBackspaceKey(key))
+        {
+            if (e.command.empty())
+            {
+                restoreSearchStart();
+                return;
+            }
+
+            eraseLastCommandCharacter();
+        }
+        else if (isPrintable(key))
+        {
+            e.command += key;
+        }
+
+        showLiveMatch();
+    }
+
+    Outcome feedSearch(const std::string& key)
+    {
+        if (isCancelKey(key))
+            restoreSearchStart();
+        else if (key == "Enter")
+            acceptSearch();
+        else
+            editSearchPattern(key);
+
+        return Outcome::none;
+    }
+
     void moveVertical(int delta)
     {
         auto rows = e.visualRows();
@@ -718,73 +822,7 @@ Outcome Editor::feed(const std::string& key)
         return Outcome::paste;
 
     if (currentMode == Mode::search)
-    {
-        auto restore = [&]
-        {
-            cursorRow = searchStartRow;
-            cursorColumn = searchStartColumn;
-            currentMode = Mode::normal;
-            command.clear();
-            liveMatch.reset();
-        };
-
-        auto find = [&](const std::string& pattern, bool forward)
-        {
-            return ::text::search(
-                buffer.lines(),
-                pattern,
-                {searchStartRow, static_cast<std::size_t>(searchStartColumn)},
-                forward);
-        };
-
-        if (key == "Esc" || key == "C-c")
-            restore();
-        else if (key == "Enter")
-        {
-            auto pattern = command.empty() ? lastPattern : command;
-            restore();
-
-            if (pattern.empty())
-                notice = "E35: No previous regular expression";
-            else
-            {
-                lastPattern = pattern;
-                lastForward = searchForward;
-                ops.jumpToMatch(
-                    find(pattern, searchForward), pattern, searchForward);
-            }
-        }
-        else
-        {
-            if (key == "Backspace" || key == "C-h")
-            {
-                if (command.empty())
-                {
-                    restore();
-                    return Outcome::none;
-                }
-
-                command.erase(
-                    static_cast<std::size_t>(previousChar(command, size(command))));
-            }
-            else if (isPrintable(key))
-                command += key;
-
-            auto found =
-                command.empty() ? std::nullopt : find(command, searchForward);
-            cursorRow = found ? found->at.line : searchStartRow;
-            cursorColumn =
-                found ? static_cast<int>(found->at.column) : searchStartColumn;
-            liveMatch.reset();
-
-            if (found)
-                liveMatch = SearchMatch {found->at.line,
-                                         static_cast<int>(found->at.column),
-                                         static_cast<int>(found->length)};
-        }
-
-        return Outcome::none;
-    }
+        return ops.feedSearch(key);
 
     if (currentMode == Mode::command)
     {
