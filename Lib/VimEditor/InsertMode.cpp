@@ -124,8 +124,10 @@ struct InsertMode : EditorOps
             {"Down", &InsertMode::moveDownOneRow},
         };
 
+        const auto keyName = std::string_view {key};
+
         for (const auto& insertKey: insertKeys)
-            if (insertKey.key == key)
+            if (insertKey.key == keyName)
                 return (this->*insertKey.run)();
 
         if (isPrintable(key))
