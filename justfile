@@ -17,9 +17,10 @@ build *cmake_args:
 test: build
     ctest --test-dir {{build_dir}} --output-on-failure
 
-[doc('Move branch-pinned deps to their branch heads and rewrite lockstep.lock')]
+[doc('Move branch-pinned dependencies to their branch heads and rewrite lockstep.lock')]
 update-deps:
-    cmake -S . -B {{build_dir}} -G Ninja -DCMAKE_BUILD_TYPE={{build_type}} -DLOCKSTEP_MODE=update
+    cmake -S . -B {{build_dir}} -G Ninja -DLOCKSTEP_MODE=update
+    cmake -S . -B {{build_dir}} -G Ninja -DLOCKSTEP_MODE=locked
 
 [doc("Build everything, then run clang-tidy (eacp's checks) over text-buffer's sources; fails on any finding")]
 [unix]
