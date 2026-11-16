@@ -26,3 +26,8 @@ update-deps:
 [unix]
 tidy: build
     scripts/tidy.sh {{build_dir}}
+
+[doc('clang-format every tracked source in place')]
+[unix]
+format:
+    git ls-files '*.h' '*.cpp' '*.mm' | xargs clang-format -i
