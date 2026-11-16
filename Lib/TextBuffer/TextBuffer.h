@@ -22,7 +22,7 @@ struct Position
 class TextBuffer
 {
 public:
-    explicit TextBuffer(std::string text = {});
+    explicit TextBuffer(std::string_view text = {});
 
     // Forgets undo.
     void setText(std::string_view text);

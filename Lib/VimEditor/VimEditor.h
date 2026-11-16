@@ -37,14 +37,14 @@ enum class Outcome
 class Editor
 {
 public:
-    explicit Editor(std::string text = {});
+    explicit Editor(std::string_view text = {});
 
     Outcome feed(const std::string& key);
 
     std::string text() const;
 
     // Counts as saved; clears undo.
-    void setText(std::string text);
+    void setText(std::string_view text);
 
     // One undo step; the mode is left as it was.
     void insertText(std::string_view text);

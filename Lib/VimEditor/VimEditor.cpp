@@ -6,12 +6,12 @@
 
 namespace vim
 {
-Editor::Editor(std::string text)
+Editor::Editor(std::string_view text)
 {
-    setText(std::move(text));
+    setText(text);
 }
 
-void Editor::setText(std::string text)
+void Editor::setText(std::string_view text)
 {
     buffer.setText(text);
     cursorRow = 0;

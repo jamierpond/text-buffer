@@ -37,7 +37,7 @@ char foldAscii(char c)
 }
 } // namespace
 
-TextBuffer::TextBuffer(std::string text)
+TextBuffer::TextBuffer(std::string_view text)
 {
     setText(text);
 }
