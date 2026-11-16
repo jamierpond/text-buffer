@@ -20,3 +20,8 @@ test: build
 [doc('Move branch-pinned deps to their branch heads and rewrite lockstep.lock')]
 update-deps:
     cmake -S . -B {{build_dir}} -G Ninja -DCMAKE_BUILD_TYPE={{build_type}} -DLOCKSTEP_MODE=update
+
+[doc("Build everything, then run clang-tidy (eacp's checks) over text-buffer's sources; fails on any finding")]
+[unix]
+tidy: build
+    scripts/tidy.sh {{build_dir}}
